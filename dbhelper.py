@@ -1,121 +1,91 @@
-from tinydb import TinyDB, Query
-import data
+from models import *
 
 
-def insert(user_id, username):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        if not db.contains(user.id == user_id):
-            db.insert({"id": user_id,
-                       "username": username,
-                       "subscription": True,
-                       "administrator": False,
-                       "directions": []})
-        else:
-            db.update({"username": username}, user.id == user_id)
+def insert(telegram_id, username):
+    user, created = User.get_or_create(telegram_id=telegram_id, defaults={'username': username})
+
+    if not created:
+        user.username = username
+        user.save()
 
 
-def get_sub_dir(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = db.get(Query()['id'] == user_id)
-        return user.get('directions')
+def get_all_tracks():
+    return [t for t in Track.select()]
 
 
-def update_sub_dir(user_id, direction):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        db.update({"directions": direction}, user.id == user_id)
+def get_user_tracks(telegram_id):
+    tracks = (Track
+              .select()
+              .join(TrackSubscription)
+              .join(User)
+              .where(User.telegram_id == telegram_id))
+
+    return [t for t in tracks]
 
 
-def find_by_id(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = db.get(Query()['id'] == user_id)
-        return user
+def find_by_id(telegram_id):
+    return User.get_or_none(User.telegram_id == telegram_id)
 
 
-def check_sub(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = db.get(Query()['id'] == user_id)
+def check_adm(telegram_id):
+    user = find_by_id(telegram_id)
 
-        if not user:
-            return False
-
-        return user.get('subscription')
+    return user.is_admin
 
 
-def check_adm(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = db.get(Query()['id'] == user_id) or {}
-        return user.get('administrator')
+def toggle_subscription(telegram_id, subscribed=True):
+    user = find_by_id(telegram_id)
+
+    if not user:
+        return False
+
+    user.is_subscribed = subscribed
+    return bool(user.save())
 
 
-def update(user_id, username):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        db.update({"username": username}, user.id == user_id)
+def toggle_track_subscription(telegram_id, track_id):
+    user = find_by_id(telegram_id)
+    track_subscription, created = TrackSubscription.get_or_create(user=user, track_id=track_id,
+                                                                  defaults={'user': user, 'track_id': track_id})
+
+    if not created:
+        track_subscription.delete_instance()
 
 
-def subscribe(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        try:
-            db.update({"subscription": True}, user.id == int(user_id))
-            return True
-        except ValueError:
-            return False
+def save_last_menu_message_id(telegram_id, message_id):
+    user = find_by_id(telegram_id)
 
+    if not user:
+        return
 
-def unsubscribe(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        try:
-            db.update({"subscription": False}, user.id == int(user_id))
-            return True
-        except ValueError:
-            return False
+    user.last_menu_message_id = message_id
+    user.save()
 
 
 def add_admin(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        db.update({"administrator": True}, user.id == user_id)
+    pass
+    # with TinyDB(data.storage_name) as db:
+    #     user = Query()
+    #     db.update({"administrator": True}, user.id == user_id)
 
 
 def remove_admin(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        db.update({"administrator": False}, user.id == user_id)
-
-
-def remove(user_id):
-    with TinyDB(data.storage_name) as db:
-        user = Query()
-        try:
-            db.remove(user.id == int(user_id))
-            return True
-        except ValueError:
-            return False
-
-
-def exists(user_id):
-    user = Query()
-    with TinyDB(data.storage_name) as db:
-        return db.contains(user.id == user_id)
+    pass
+    # with TinyDB(data.storage_name) as db:
+    #     user = Query()
+    #     db.update({"administrator": False}, user.id == user_id)
 
 
 def get_all_admin():
-    user = Query()
-    with TinyDB(data.storage_name) as db:
-        return db.search(user.administrator == True)
+    return [user for user in User.select().where(User.is_admin == True)]
 
 
 def find_all_by_dir(direction):
-    user = Query()
-    with TinyDB(data.storage_name) as db:
-        return db.search(user.directions.any(direction))
+    pass
+    # user = Query()
+    # with TinyDB(data.storage_name) as db:
+    #     return db.search(user.directions.any(direction))
 
 
 def find_all_subs():
-    user = Query()
-    with TinyDB(data.storage_name) as db:
-        return db.search(user.subscription == True)
+    return [user for user in User.select().where(User.is_subscribed == True)]
