@@ -27,6 +27,13 @@ bot = TeleBot(botToken)
 logger = logging.getLogger()
 
 
+def default_day():
+    if datetime.now() <= datetime(2019, 4, 19):
+        return 1
+    else:
+        return 2
+
+
 def log(func):
     def _(message, *args, **kwargs):
         logger.info("================")
@@ -44,53 +51,118 @@ def show_main_menu(chat_id, text, force=False):
     user = dbhelper.find_by_id(chat_id)
 
     if force or not user.last_menu_message_id:
-        reply = bot.send_message(chat_id, text, reply_markup=help_markup())
+        reply = bot.send_message(chat_id, text, reply_markup=markup_menu())
         dbhelper.save_last_menu_message_id(chat_id, reply.message_id)
     else:
         try:
-            show_menu(chat_id=chat_id, message_id=user.last_menu_message_id, text=text, markup=help_markup())
+            show_menu(chat_id=chat_id, message_id=user.last_menu_message_id, text=text, markup=markup_menu())
         except ApiException:
             show_main_menu(chat_id, text, True)
 
 
-def show_menu(chat_id, text, markup, message_id=None):
+def show_menu(chat_id, text, markup, preview=True, message_id=None):
     if not message_id:
         message_id = dbhelper.find_by_id(chat_id).last_menu_message_id
 
-    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown")
+    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown",
+                          disable_web_page_preview=(not preview))
     bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=markup)
 
 
-def help_markup():
+def markup_menu():
     markup = types.InlineKeyboardMarkup()
     markup.row_width = 1
-    markup.add(types.InlineKeyboardButton("Расписание", callback_data="menu"),
-               types.InlineKeyboardButton("Подписка", callback_data="subscribe_settings"),
-               types.InlineKeyboardButton("Место проведения", callback_data="location"),
-               types.InlineKeyboardButton("Ссылки", callback_data="links"))
+    markup.add(types.InlineKeyboardButton("Расписание", callback_data="menu_schedule"),
+               types.InlineKeyboardButton("Подписка", callback_data="menu_subscribe"),
+               types.InlineKeyboardButton("Место проведения", callback_data="action_location"),
+               types.InlineKeyboardButton("Ссылки", callback_data="menu_links"))
     return markup
 
 
-def sub_settings_markup():
+def markup_schedule():
     markup = types.InlineKeyboardMarkup()
     markup.row_width = 2
-    markup.add(types.InlineKeyboardButton("Новости", callback_data="news_settings"),
-               types.InlineKeyboardButton("Направления", callback_data="direction_settings"))
+
+    markup.row(types.InlineKeyboardButton("По часам", callback_data="menu_schedule_hourly"),
+               types.InlineKeyboardButton("По направлениям", callback_data="menu_schedule_tracks"))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu"))
+
+    return markup
+
+
+def markup_schedule_hourly(day):
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 2
+
+    markup.add(
+        *[types.InlineKeyboardButton(hour, callback_data="action_schedule_hourly_{}_{}".format(day, hour)) for hour in
+          data.api.get_hours(day=day)])
+    if day == 1:
+        markup.row(types.InlineKeyboardButton("День 2 (20 апреля)", callback_data="menu_schedule_hourly_2"))
+    else:
+        markup.row(types.InlineKeyboardButton("День 1 (19 апреля)", callback_data="menu_schedule_hourly_1"))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_schedule"))
+
+    return markup
+
+
+def markup_schedule_track():
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 1
+
+    all_tracks = data.api.get_tracks(1)
+    buttons = [types.InlineKeyboardButton(text="{}".format(track['name']),
+                                          callback_data="action_schedule_track_{}_{}".format(track['id'], default_day())) for track in
+               all_tracks]
+
+    markup.add(*buttons)
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_schedule"))
+
+    return markup
+
+
+def markup_subscribe():
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 2
+    markup.row(types.InlineKeyboardButton("Новости", callback_data="menu_subscribe_news"),
+               types.InlineKeyboardButton("Направления", callback_data="menu_subscribe_tracks"))
     markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu"))
     return markup
 
 
-def news_settings_markup(user):
+def markup_subscribe_news(user):
     markup = types.InlineKeyboardMarkup()
     button = "Подписаться на новости" if not user.is_subscribed else "Отписаться от новостей"
 
-    markup.row(types.InlineKeyboardButton(text=button, callback_data="toggle_news"))
-    markup.row(types.InlineKeyboardButton("« Назад", callback_data="subscribe_settings"))
+    markup.row(types.InlineKeyboardButton(text=button, callback_data="action_subscribe_news"))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_subscribe"))
 
     return markup
 
 
-def settings_subscribe(message):
+def menu_schedule(message):
+    text = "Здесь вы можете посмотреть программу и выбрать, на какой доклад хотите сходить"
+
+    show_menu(chat_id=message.chat.id, text=text, markup=markup_schedule())
+
+
+def menu_schedule_hourly(message, day=None):
+    if not day:
+        day = default_day()
+
+    text = "Вы просматриваете расписание на " + ("*19 апреля*" if day == 1 else "*20 апреля*") \
+           + "\n\nВыберите время, чтобы получить список докладов и залы, в которых они проходят"
+
+    show_menu(chat_id=message.chat.id, text=text, markup=markup_schedule_hourly(day=day))
+
+
+def menu_schedule_tracks(message):
+    text = "Выберите направление, чтобы получить список докладов и залы, в которых они проходят"
+
+    show_menu(chat_id=message.chat.id, text=text, markup=markup_schedule_track())
+
+
+def menu_subscribe(message):
     user = dbhelper.find_by_id(message.chat.id)
     user_tracks = dbhelper.get_user_tracks(message.chat.id)
 
@@ -105,43 +177,28 @@ def settings_subscribe(message):
 
     text += "\n\nКакую подписку вы хотите настроить?"
 
-    show_menu(chat_id=message.chat.id, text=text, markup=sub_settings_markup())
+    show_menu(chat_id=message.chat.id, text=text, markup=markup_subscribe())
 
 
-def settings_news(message):
+def menu_subscribe_news(message):
     user = dbhelper.find_by_id(message.chat.id)
     status = "активна" if user.is_subscribed else "неактивна"
 
     show_menu(message.chat.id, text="Подписка на новостную рассылку: *{}*.".format(status),
-              markup=news_settings_markup(user))
+              markup=markup_subscribe_news(user))
 
 
-def subscription_toggle(message):
-    user = dbhelper.find_by_id(message.chat.id)
-    should_be_subscribed = not user.is_subscribed
-
-    dbhelper.toggle_subscription(message.chat.id, subscribed=should_be_subscribed)
-
-    if should_be_subscribed:
-        result_message = "Вы подписались на новостные рассылки! :)"
-    else:
-        result_message = "Вы отписались от новостных рассылок! :("
-
-    user = dbhelper.find_by_id(message.chat.id)
-    show_menu(chat_id=message.chat.id, text=result_message, markup=news_settings_markup(user))
-
-
-def tracks_list(message):
+def menu_subscribe_tracks(message):
     all_tracks = dbhelper.get_all_tracks()
     user_tracks = dbhelper.get_user_tracks(message.chat.id)
 
     keyboard = types.InlineKeyboardMarkup(row_width=1)
     buttons = [types.InlineKeyboardButton(
         text="{}{}".format("[x] " if track.id in map(lambda track: track.id, user_tracks) else "", track.title),
-        callback_data="subscribe_track_{}".format(track.id)) for track in all_tracks]
+        callback_data="action_subscribe_track_{}".format(track.id)) for track in all_tracks]
 
     keyboard.add(*buttons)
-    keyboard.row(types.InlineKeyboardButton("« Назад", callback_data="subscribe_settings"))
+    keyboard.row(types.InlineKeyboardButton("« Назад", callback_data="menu_subscribe"))
 
     if not user_tracks:
         text = "Вы не подписаны ни на одно направление.\n\nВыберите направления, на которые хотите подписаться."
@@ -154,12 +211,7 @@ def tracks_list(message):
     show_menu(chat_id=message.chat.id, text=text, markup=keyboard)
 
 
-def toggle_track_subscription(message, track_id):
-    dbhelper.toggle_track_subscription(message.chat.id, int(track_id))
-    tracks_list(message)
-
-
-def send_links(message):
+def menu_links(message):
     keyboard = types.InlineKeyboardMarkup()
 
     keyboard.add(*[types.InlineKeyboardButton(**link) for link in data.links])
@@ -168,7 +220,78 @@ def send_links(message):
     show_menu(chat_id=message.chat.id, text="Подписывайся на наши социальные сети 🐴", markup=keyboard)
 
 
-def send_location(message):
+def action_schedule_hourly(message, day, time):
+    day_formatted = "19 апреля" if day == 1 else "20 апреля"
+    schedule = data.api.get_schedule_for_hour(day, time)
+
+    text = "Список докладов, которые пройдут *{}* в *{}*:\n".format(day_formatted, time)
+    url = 'https://2019.secon.ru/reports/'
+
+    if isinstance(schedule, list):
+        for item in schedule:
+            if 'report' not in item:
+                continue
+
+            text += "\n• [{}]({})".format(item['report']['name'], url + item['report']['slug'])
+            text += "\n*Спикер*: {}".format(", ".join(
+                ["{name} ({job})".format(**s) for s in item['report']['speakers']]))
+            text += "\n*Место проведения*: {}\n".format(data.api.get_room(item['room_id']))
+    else:
+        if 'report' not in schedule:
+            text += "\n• *{}*".format(schedule['title'])
+        else:
+            text += "\n• [{}]({})".format(schedule['report']['name'], url + schedule['report']['slug'])
+            text += "\n*Спикер*: {}".format(", ".join(
+                ["{name} ({job})".format(**s) for s in schedule['report']['speakers']]))
+            text += "\n*Место проведения*: {}\n".format(data.api.get_room(schedule['room']['id']))
+
+    show_menu(chat_id=message.chat.id, text=text, markup=markup_schedule_hourly(day), preview=False)
+
+
+def action_schedule_track(message, track_id, day=None):
+    if not day:
+        day = default_day()
+
+    day_formatted = "19 апреля" if day == 1 else "20 апреля"
+    url = 'https://2019.secon.ru/reports/'
+
+    text = "Расписание по направлению *{}* на *{}*:".format(data.api.get_track(track_id), day_formatted)
+
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 1
+
+    if day == 1:
+        markup.row(types.InlineKeyboardButton("День 2 (20 апреля)",
+                                              callback_data="action_schedule_track_{}_2".format(track_id)))
+    else:
+        markup.row(types.InlineKeyboardButton("День 1 (19 апреля)",
+                                              callback_data="action_schedule_track_{}_1".format(track_id)))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_schedule_tracks"))
+
+    show_menu(chat_id=message.chat.id, text=text, markup=markup, preview=False)
+
+
+def action_subscribe_news(message):
+    user = dbhelper.find_by_id(message.chat.id)
+    should_be_subscribed = not user.is_subscribed
+
+    dbhelper.toggle_subscription(message.chat.id, subscribed=should_be_subscribed)
+
+    if should_be_subscribed:
+        result_message = "Вы подписались на новостные рассылки! :)"
+    else:
+        result_message = "Вы отписались от новостных рассылок! :("
+
+    user = dbhelper.find_by_id(message.chat.id)
+    show_menu(chat_id=message.chat.id, text=result_message, markup=markup_subscribe_news(user))
+
+
+def action_subscribe_track(message, track_id):
+    dbhelper.toggle_track_subscription(message.chat.id, int(track_id))
+    menu_subscribe_tracks(message)
+
+
+def action_location(message):
     keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
     keyboard.add(types.KeyboardButton(text="Меню"))
 
@@ -176,9 +299,45 @@ def send_location(message):
     bot.send_location(chat_id=message.chat.id, latitude=53.220670, longitude=44.883901)
 
 
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    def show_menu_route(message):
+        show_main_menu(message.chat.id, text="Меню взаимодействия:")
+
+    routing = {
+        "menu_schedule": menu_schedule,
+        "menu_schedule_hourly": menu_schedule_hourly,
+        "menu_schedule_tracks": menu_schedule_tracks,
+        "menu_subscribe": menu_subscribe,
+        "menu_links": menu_links,
+        "action_location": action_location,
+        "menu_subscribe_tracks": menu_subscribe_tracks,
+        "menu_subscribe_news": menu_subscribe_news,
+        "action_subscribe_news": action_subscribe_news,
+        "menu": show_menu_route
+    }
+
+    if call.data.startswith("action_subscribe_track_"):
+        method = partial(action_subscribe_track, track_id=int(call.data.split("_")[-1]))
+    elif call.data.startswith("action_schedule_track_"):
+        track_id, day = call.data.split("_")[-2:]
+
+        method = partial(action_schedule_track, track_id=int(track_id), day=int(day))
+    elif call.data.startswith("action_schedule_hourly_"):
+        day, time = call.data.split("_")[-2:]
+
+        method = partial(action_schedule_hourly, day=int(day), time=time)
+    elif call.data.startswith("menu_schedule_hourly_"):
+        method = partial(menu_schedule_hourly, day=int(call.data.split("_")[-1]))
+    else:
+        method = routing.get(call.data, show_menu_route)
+
+    method(call.message)
+
+
 @bot.message_handler(commands=["start"])
 @log
-def command_start(message):
+def start(message):
     user = dbhelper.find_by_id(int(message.chat.id))
     username = (message.from_user.first_name or message.from_user.username)
 
@@ -189,33 +348,17 @@ def command_start(message):
         show_main_menu(message.chat.id, "Здравствуйте, {} :)".format(username), force=True)
 
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-    def show_menu_route(message):
-        show_main_menu(message.chat.id, text="Меню взаимодействия:")
-
-    routing = {
-        "subscribe_settings": settings_subscribe,
-        "links": send_links,
-        "location": send_location,
-        "direction_settings": tracks_list,
-        "news_settings": settings_news,
-        "toggle_news": subscription_toggle,
-        "menu": show_menu_route
-    }
-
-    if call.data.startswith("subscribe_track_"):
-        method = partial(toggle_track_subscription, track_id=call.data.split("_")[-1])
-    else:
-        method = routing.get(call.data, show_menu_route)
-
-    method(call.message)
-
-
 @bot.message_handler(func=lambda message: message.text.lower() in ["меню", "menu"])
 @log
-def new_menu(message):
+def menu(message):
     show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+
+
+@bot.message_handler(func=lambda message: True, content_types=["text"])
+@log
+def default(message):
+    show_main_menu(message.chat.id, "Я еще не научился отвечать на такие запросы :)"
+                                    "\nДавайте ограничимся меню взаимодействия?", force=True)
 
 
 # ==============Команды администратора=================
@@ -472,14 +615,6 @@ def find_by_id(message):
         except ValueError:
             bot.send_message(message.chat.id, "Возникла ошибка типа. "
                                               "Возможно вводимый id состоял не только из чисел или содержал пробелы")
-
-
-# обработка булщита
-@bot.message_handler(func=lambda message: True, content_types=["text"])
-@log
-def command_default(message):
-    show_main_menu(message.chat.id, "Я еще не научился отвечать на такие запросы :)"
-                                    "\nДавайте ограничимся меню взаимодействия?", force=True)
 
 
 bot.polling(none_stop=True)
