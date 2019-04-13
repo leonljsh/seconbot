@@ -30,10 +30,27 @@ class Api:
 
         return [UglyKey(k).get('time') for k in schedule.keys()]
 
-    def get_schedule_for_hour(self, day, hour):
+    def get_schedule_by_hour(self, day, hour):
         schedule = dict([(UglyKey(k).get('time'), v) for k, v in self._get_schedule(day).items()])
 
         return schedule.get(hour)
+
+    def get_schedule_by_track(self, track_id, day):
+        schedule = dict([(UglyKey(k).get('time'), v) for k, v in self._get_schedule(day).items()])
+
+        result = []
+
+        for time, item in schedule.items():
+            if isinstance(item, list):
+                for timeslot in item:
+                    if track_id == timeslot.get('report', {}).get('track', {}).get('id'):
+                        result.append({**timeslot, **{'time': time}})
+            else:
+                if track_id == item.get('report', {}).get('track', {}).get('id'):
+                    result.append(result.append({**item, **{'time': time}}))
+
+        return result
+
 
     def _get_schedule(self, day=1):
         return self._make_request(day=day).get("table")

@@ -27,10 +27,28 @@ def find_by_id(telegram_id):
     return User.get_or_none(User.telegram_id == telegram_id)
 
 
+def toggle_typing(telegram_id, state=None):
+    user = find_by_id(telegram_id)
+
+    if state is None:
+        user.is_typing = not user.is_typing
+    else:
+        user.is_typing = state
+
+    user.save()
+
+
+
+def check_typing(telegram_id):
+    user = find_by_id(telegram_id)
+
+    return user and user.is_typing
+
+
 def check_adm(telegram_id):
     user = find_by_id(telegram_id)
 
-    return user.is_admin
+    return user and user.is_admin
 
 
 def toggle_subscription(telegram_id, subscribed=True):
@@ -60,6 +78,12 @@ def save_last_menu_message_id(telegram_id, message_id):
 
     user.last_menu_message_id = message_id
     user.save()
+
+
+def create_support_request(telegram_id, message):
+    user = find_by_id(telegram_id)
+
+    Request.create(user=user, message=message)
 
 
 def add_admin(user_id):

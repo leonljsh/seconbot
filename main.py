@@ -25,6 +25,7 @@ administration = {
 botToken = data.token
 bot = TeleBot(botToken)
 logger = logging.getLogger()
+support_request_cache = {}
 
 
 def default_day():
@@ -51,11 +52,12 @@ def show_main_menu(chat_id, text, force=False):
     user = dbhelper.find_by_id(chat_id)
 
     if force or not user.last_menu_message_id:
-        reply = bot.send_message(chat_id, text, reply_markup=markup_menu())
+        reply = bot.send_message(chat_id, text, reply_markup=markup_menu(user and user.is_admin))
         dbhelper.save_last_menu_message_id(chat_id, reply.message_id)
     else:
         try:
-            show_menu(chat_id=chat_id, message_id=user.last_menu_message_id, text=text, markup=markup_menu())
+            show_menu(chat_id=chat_id, message_id=user.last_menu_message_id, text=text,
+                      markup=markup_menu(user and user.is_admin))
         except ApiException:
             show_main_menu(chat_id, text, True)
 
@@ -69,13 +71,18 @@ def show_menu(chat_id, text, markup, preview=True, message_id=None):
     bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=markup)
 
 
-def markup_menu():
+def markup_menu(is_admin=False):
     markup = types.InlineKeyboardMarkup()
     markup.row_width = 1
     markup.add(types.InlineKeyboardButton("Расписание", callback_data="menu_schedule"),
                types.InlineKeyboardButton("Подписка", callback_data="menu_subscribe"),
                types.InlineKeyboardButton("Место проведения", callback_data="action_location"),
-               types.InlineKeyboardButton("Ссылки", callback_data="menu_links"))
+               types.InlineKeyboardButton("Ссылки", callback_data="menu_links"),
+               types.InlineKeyboardButton("Связь с организаторами", callback_data="action_contact"))
+
+    if is_admin:
+        markup.row(types.InlineKeyboardButton("Администрирование", callback_data="menu"))
+
     return markup
 
 
@@ -112,7 +119,9 @@ def markup_schedule_track():
 
     all_tracks = data.api.get_tracks(1)
     buttons = [types.InlineKeyboardButton(text="{}".format(track['name']),
-                                          callback_data="action_schedule_track_{}_{}".format(track['id'], default_day())) for track in
+                                          callback_data="action_schedule_track_{}_{}".format(track['id'],
+                                                                                             default_day())) for track
+               in
                all_tracks]
 
     markup.add(*buttons)
@@ -138,6 +147,14 @@ def markup_subscribe_news(user):
     markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_subscribe"))
 
     return markup
+
+
+def keyboard_contact():
+    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    keyboard.row_width = 1
+    keyboard.add(types.KeyboardButton(text="Отправить"), types.KeyboardButton(text="Отменить"))
+
+    return keyboard
 
 
 def menu_schedule(message):
@@ -222,7 +239,7 @@ def menu_links(message):
 
 def action_schedule_hourly(message, day, time):
     day_formatted = "19 апреля" if day == 1 else "20 апреля"
-    schedule = data.api.get_schedule_for_hour(day, time)
+    schedule = data.api.get_schedule_by_hour(day, time)
 
     text = "Список докладов, которые пройдут *{}* в *{}*:\n".format(day_formatted, time)
     url = 'https://2019.secon.ru/reports/'
@@ -239,6 +256,8 @@ def action_schedule_hourly(message, day, time):
     else:
         if 'report' not in schedule:
             text += "\n• *{}*".format(schedule['title'])
+            if 'room' in schedule:
+                text += "\n*Место проведения*: {}\n".format(data.api.get_room(schedule['room']['id']))
         else:
             text += "\n• [{}]({})".format(schedule['report']['name'], url + schedule['report']['slug'])
             text += "\n*Спикер*: {}".format(", ".join(
@@ -255,7 +274,24 @@ def action_schedule_track(message, track_id, day=None):
     day_formatted = "19 апреля" if day == 1 else "20 апреля"
     url = 'https://2019.secon.ru/reports/'
 
-    text = "Расписание по направлению *{}* на *{}*:".format(data.api.get_track(track_id), day_formatted)
+    text = "Расписание по направлению *{}* на *{}*:\n".format(data.api.get_track(track_id), day_formatted)
+
+    for item in data.api.get_schedule_by_track(track_id, day):
+        if 'report' not in item:
+            text += "\n• *{}*".format(item['title'])
+            text += "\n*Время проведения*: {}".format(item['time'])
+            if 'room' in item:
+                text += "\n*Место проведения*: {}\n".format(data.api.get_room(item['room']['id']))
+            else:
+                text += '\n'
+        else:
+            text += "\n• [{}]({})".format(item['report']['name'], url + item['report']['slug'])
+            text += "\n*Спикер*: {}".format(", ".join(
+                ["{name} ({job})".format(**s) for s in item['report']['speakers']]))
+            text += "\n*Время проведения*: {}".format(item['time'])
+            text += "\n*Место проведения*: {}\n".format(data.api.get_room(item['room_id']))
+    else:
+        text += "\nДокладов по этому направлению нет."
 
     markup = types.InlineKeyboardMarkup()
     markup.row_width = 1
@@ -299,6 +335,15 @@ def action_location(message):
     bot.send_location(chat_id=message.chat.id, latitude=53.220670, longitude=44.883901)
 
 
+def action_contact(message):
+    dbhelper.toggle_typing(message.chat.id, True)
+
+    text = "Если у Вас возник какой-то вопрос или вы что-то потеряли и очень хотите найти" \
+           ", напишите здесь и мы обязательно Вам ответим!"
+
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_contact())
+
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     def show_menu_route(message):
@@ -314,6 +359,7 @@ def callback_query(call):
         "menu_subscribe_tracks": menu_subscribe_tracks,
         "menu_subscribe_news": menu_subscribe_news,
         "action_subscribe_news": action_subscribe_news,
+        "action_contact": action_contact,
         "menu": show_menu_route
     }
 
@@ -352,6 +398,47 @@ def start(message):
 @log
 def menu(message):
     show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+
+
+def typing_menu(message):
+    return dbhelper.check_typing(message.chat.id)
+
+
+@bot.message_handler(func=typing_menu)
+@log
+def support_request_typing(message):
+    if message.text.lower() == 'отменить':
+        dbhelper.toggle_typing(message.chat.id, False)
+        show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+    elif message.text.lower() == 'отправить':
+        text = "\n".join(v for v in support_request_cache.get(message.chat.id, {}).values())
+
+        if text:
+            dbhelper.create_support_request(message.chat.id, text)
+            dbhelper.toggle_typing(message.chat.id, False)
+
+            support_request_cache[message.chat.id] = {}
+
+            bot.send_message(chat_id=message.chat.id, text="Сообщение организаторам успешно отправлено")
+            show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+        else:
+            bot.send_message(chat_id=message.chat.id,
+                             text="Сперва напишите сообщение, которое хотите отправить администрации",
+                             reply_markup=keyboard_contact())
+    else:
+        if not support_request_cache.get(message.chat.id):
+            support_request_cache[message.chat.id] = {}
+
+        support_request_cache[message.chat.id].update({message.message_id: message.text})
+
+
+@bot.edited_message_handler(func=typing_menu)
+@log
+def support_request_updating(message):
+    if not support_request_cache.get(message.chat.id):
+        pass
+
+    support_request_cache[message.chat.id].update({message.message_id: message.text})
 
 
 @bot.message_handler(func=lambda message: True, content_types=["text"])

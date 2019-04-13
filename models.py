@@ -1,4 +1,4 @@
-from peewee import BooleanField, CharField, ForeignKeyField, IntegerField, Model, SqliteDatabase
+from peewee import BooleanField, CharField, ForeignKeyField, IntegerField, Model, SqliteDatabase, TextField
 
 import data
 
@@ -10,6 +10,7 @@ class User(Model):
     username = CharField(null=True)
     is_admin = BooleanField(default=False)
     is_subscribed = BooleanField(default=True)
+    is_typing = BooleanField(default=False)
 
     last_menu_message_id = IntegerField(null=True)
 
@@ -35,8 +36,18 @@ class TrackSubscription(Model):
         )
 
 
+class Request(Model):
+    user = ForeignKeyField(User)
+    message = TextField()
+    published = BooleanField(default=False)
+    publisher = ForeignKeyField(User, null=True)
+
+    class Meta:
+        database = db
+
+
 need_insert = not Track.table_exists()
-db.create_tables([User, Track, TrackSubscription], safe=True)
+db.create_tables([User, Track, TrackSubscription, Request], safe=True)
 
 if need_insert:
     for track in data.api.get_tracks(day=1):
