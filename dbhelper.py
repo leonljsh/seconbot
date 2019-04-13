@@ -1,3 +1,5 @@
+import json
+
 from models import *
 
 
@@ -83,7 +85,7 @@ def save_last_menu_message_id(telegram_id, message_id):
 def create_support_request(telegram_id, message):
     user = find_by_id(telegram_id)
 
-    Request.create(user=user, message=message)
+    Request.create(user=user, message=json.dumps(message))
 
 
 def add_admin(user_id):

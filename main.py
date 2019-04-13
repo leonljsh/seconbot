@@ -411,7 +411,7 @@ def support_request_typing(message):
         dbhelper.toggle_typing(message.chat.id, False)
         show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
     elif message.text.lower() == 'отправить':
-        text = "\n".join(v for v in support_request_cache.get(message.chat.id, {}).values())
+        text = support_request_cache.get(message.chat.id, {})
 
         if text:
             dbhelper.create_support_request(message.chat.id, text)
