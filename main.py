@@ -157,6 +157,13 @@ def keyboard_contact():
     return keyboard
 
 
+def keyboard_menu():
+    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    keyboard.add(types.KeyboardButton(text="Меню"))
+
+    return keyboard
+
+
 def menu_schedule(message):
     text = "Здесь вы можете посмотреть программу и выбрать, на какой доклад хотите сходить"
 
@@ -328,17 +335,14 @@ def action_subscribe_track(message, track_id):
 
 
 def action_location(message):
-    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    keyboard.add(types.KeyboardButton(text="Меню"))
-
-    bot.send_message(chat_id=message.chat.id, text="Адрес: \nпр. Строителей, 168А, Пенза", reply_markup=keyboard)
+    bot.send_message(chat_id=message.chat.id, text="Адрес: \nпр. Строителей, 168А, Пенза", reply_markup=keyboard_menu())
     bot.send_location(chat_id=message.chat.id, latitude=53.220670, longitude=44.883901)
 
 
 def action_contact(message):
     dbhelper.toggle_typing(message.chat.id, True)
 
-    text = "Если у Вас возник какой-то вопрос или вы что-то потеряли и очень хотите найти" \
+    text = "Если у Вас возник какой-то вопрос или Вы что-то потеряли и очень хотите найти" \
            ", напишите здесь и мы обязательно Вам ответим!"
 
     bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_contact())
@@ -394,7 +398,7 @@ def start(message):
         show_main_menu(message.chat.id, "Здравствуйте, {} :)".format(username), force=True)
 
 
-@bot.message_handler(func=lambda message: message.text.lower() in ["меню", "menu"])
+@bot.message_handler(func=lambda message: message.text.lower().strip() in ["меню", "menu"])
 @log
 def menu(message):
     show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
@@ -407,10 +411,12 @@ def typing_menu(message):
 @bot.message_handler(func=typing_menu)
 @log
 def support_request_typing(message):
-    if message.text.lower() == 'отменить':
+    if message.text.lower().strip() == 'отменить':
         dbhelper.toggle_typing(message.chat.id, False)
+
+        bot.send_message(chat_id=message.chat.id, text="Действие отменено", reply_markup=keyboard_menu())
         show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
-    elif message.text.lower() == 'отправить':
+    elif message.text.lower().strip() == 'отправить':
         text = support_request_cache.get(message.chat.id, {})
 
         if text:
@@ -419,7 +425,8 @@ def support_request_typing(message):
 
             support_request_cache[message.chat.id] = {}
 
-            bot.send_message(chat_id=message.chat.id, text="Сообщение организаторам успешно отправлено")
+            bot.send_message(chat_id=message.chat.id, text="Сообщение организаторам успешно отправлено",
+                             reply_markup=keyboard_menu())
             show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
         else:
             bot.send_message(chat_id=message.chat.id,

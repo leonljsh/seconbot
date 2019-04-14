@@ -6,16 +6,24 @@ db = SqliteDatabase(data.storage_name)
 
 
 class User(Model):
+    STATE_REGULAR = 0
+    STATE_TYPING = 1
+    STATE_ADMIN_TYPING = 2
+
     telegram_id = IntegerField(unique=True)
     username = CharField(null=True)
     is_admin = BooleanField(default=False)
     is_subscribed = BooleanField(default=True)
-    is_typing = BooleanField(default=False)
+    state = IntegerField(default=STATE_REGULAR)
 
     last_menu_message_id = IntegerField(null=True)
 
     class Meta:
         database = db
+
+    @property
+    def is_typing(self):
+        return self.state == self.STATE_TYPING
 
 
 class Track(Model):

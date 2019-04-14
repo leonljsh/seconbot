@@ -33,12 +33,11 @@ def toggle_typing(telegram_id, state=None):
     user = find_by_id(telegram_id)
 
     if state is None:
-        user.is_typing = not user.is_typing
+        user.state = User.STATE_TYPING if not user.is_typing else User.STATE_REGULAR
     else:
-        user.is_typing = state
+        user.state = User.STATE_TYPING if state else User.STATE_REGULAR
 
     user.save()
-
 
 
 def check_typing(telegram_id):
