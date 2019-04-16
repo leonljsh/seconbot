@@ -1,0 +1,9 @@
+version: '3.5'
+services:
+  bot:
+    container_name: secon_bot
+    restart: always
+    build: .
+    command: "python main.py"
+    volumes:
+      - .:/bot
