@@ -12,16 +12,11 @@ from telebot.apihelper import ApiException
 import data
 import dbhelper
 
-administration = {
-    "direct_post": "рассылка по направлениям",
-    "send_post": "массовая рассылка для тех кто подписан на новостные рассылки",
-    "emergency_post": "массовая рассылка без учета подписки "
-                      "(каждому, кто хотя бы раз запускал бота и записан в базе данных)",
-    "add_admin": "добавить администратора",
-    "remove_admin": "удалить администратора",
-    "list_admin": "вывести id всех администраторов",
-    "find_by_id": "найти в базе данных пользователя и вывести информацию  о нем"
-}
+GREETING = "Я бот SECON'19. Здесь Вы можете посмотреть расписание конференции," \
+           + "а также подписаться на рассылки, благодаря которым Вы не пропустите" \
+           + "важную информацию.\n" \
+           + "А еще я могу помочь связаться с организаторами, чтобы получить ответ " \
+           + "на какой-то супер-важный вопрос."
 
 botToken = data.token
 bot = TeleBot(botToken)
@@ -49,20 +44,22 @@ def log(func):
     return _
 
 
-def show_main_menu(chat_id, text, force=False, markup=None):
+def show_main_menu(chat_id, text, force=False, markup=None, parse_mode="Markdown"):
+    dbhelper.toggle_typing(chat_id, False, False)
+    dbhelper.toggle_typing(chat_id, False, True)
     user = dbhelper.find_by_id(chat_id)
 
     reply_markup = markup(user and user.is_admin) if markup is not None else markup_menu(user and user.is_admin)
 
     if force or not user.last_menu_message_id:
-        reply = bot.send_message(chat_id, text, reply_markup=reply_markup)
+        reply = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         dbhelper.save_last_menu_message_id(chat_id, reply.message_id)
     else:
         try:
             show_menu(chat_id=chat_id, message_id=user.last_menu_message_id, text=text,
                       markup=reply_markup)
         except ApiException:
-            show_main_menu(chat_id, text, True, markup=reply_markup)
+            show_main_menu(chat_id, text, True, markup=reply_markup, parse_mode=parse_mode)
 
 
 def show_menu(chat_id, text, markup, preview=True, message_id=None):
@@ -98,6 +95,19 @@ def markup_admin_menu(*_, **__):
                types.InlineKeyboardButton("Пользователи", callback_data="menu_admin_users"),
                types.InlineKeyboardButton("Обращения ({})".format(count), callback_data="menu_admin_requests"))
     markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu"))
+
+    return markup
+
+
+def markup_admin_users(_, page=1, users_len=11):
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 2
+
+    if page > 1:
+        markup.add(types.InlineKeyboardButton("«", callback_data="menu_admin_users_{}".format(page - 1)))
+    if users_len == 11:
+        markup.add(types.InlineKeyboardButton("»", callback_data="menu_admin_users_{}".format(page + 1)))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_admin"))
 
     return markup
 
@@ -233,6 +243,35 @@ def menu_admin_requests(message, page=1):
                                               callback_data="action_admin_mark_as_read_{}".format(request.id)))
 
         bot.send_message(chat_id=message.chat.id, text=request_message, reply_markup=markup, parse_mode="Markdown")
+
+
+def menu_admin_users(message, page=1):
+    users = dbhelper.get_all_users(page=page)
+
+    text = "Список пользователей:\n"
+
+    for user in (users[:-1] if len(users) == 11 else users):
+        text += "\n• <b>{name}</b> @{username}".format(name=user.name, username=user.username)
+        text += "(А)" if user.is_admin else ""
+        text += "\nПодписка: <i>{}активна</i>".format("" if user.is_subscribed else "не")
+        text += "\nНаправления: {}".format(", ".join([t.title for t in dbhelper.get_user_tracks(user.telegram_id)]))
+        text += "\nДействия: " + (
+            "/give_admin_{id}".format(id=user.id) if not user.is_admin else "/revoke_admin_{}".format(user.id))
+        text += "\n"
+
+    show_main_menu(chat_id=message.chat.id, text=text, force=True, parse_mode="html",
+                   markup=partial(markup_admin_users, page=page, users_len=len(users)))
+
+
+def menu_admin_mailing(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 1
+    markup.add(types.InlineKeyboardButton("ВСЕМ пользователям", callback_data="action_mailing_all"),
+               types.InlineKeyboardButton("По подписке", callback_data="action_mailing_subscribed"),
+               types.InlineKeyboardButton("По направлению", callback_data="action_mailing_track"))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_admin"))
+
+    show_menu(chat_id=message.chat.id, text="Выберите тип рассылки", markup=markup)
 
 
 def menu_schedule(message):
@@ -453,7 +492,7 @@ def action_admin_send(message):
 
     request = dbhelper.get_support_request(support_request_cache[message.chat.id]["id"])
 
-    if 'text' not in support_request_cache[message.chat.id]:
+    if support_request_cache[message.chat.id].get("type", "forward") == "forward":
         for user in dbhelper.get_all_users():
             if user.telegram_id == message.chat.id:
                 continue
@@ -465,7 +504,7 @@ def action_admin_send(message):
         message_id = list(json.loads(request.message).keys())[-1]
 
         bot.send_message(chat_id=request.user.telegram_id, reply_to_message_id=message_id,
-                         text=support_request_cache[message.chat.id]['text'])
+                         text=support_request_cache[message.chat.id]["text"])
 
     dbhelper.mark_support_request_as_read(request.id)
     support_request_cache[message.chat.id] = {}
@@ -493,7 +532,7 @@ def action_admin_publish(message, id):
     dbhelper.toggle_typing(message.chat.id, True, True)
     request = dbhelper.get_support_request(id)
 
-    support_request_cache[message.chat.id] = {"id": id}
+    support_request_cache[message.chat.id] = {"id": id, "type": "forward"}
 
     text = "Вы действительно хотите отправить всем сообщение от пользователя {} с текстом:```{}```?".format(
         "[@{username}](tg://user?id={username})".format(username=request.user.username),
@@ -506,13 +545,31 @@ def action_admin_reply(message, id):
     dbhelper.toggle_typing(message.chat.id, True, True)
     request = dbhelper.get_support_request(id)
 
-    support_request_cache[message.chat.id] = {"id": id}
+    support_request_cache[message.chat.id] = {"id": id, "type": "reply"}
 
-    text = "Напишите сообщение, которое хотите отправить пользователю {} в ответ на ```{}```.".format(
+    text = "Напишите сообщение, которое хотите отправить пользователю {} в ответ:\n{}.".format(
         "[@{username}](tg://user?id={username})".format(username=request.user.username),
         "\n".join(json.loads(request.message).values()))
 
     bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_send_or_cancel(), parse_mode="Markdown")
+
+
+@bot.message_handler(func=lambda message: message.text and message.text.lower().strip().startswith('/give_admin_'))
+def give_admin(message):
+    user = dbhelper.find(int(message.text.split('_')[-1]))
+    dbhelper.toggle_admin(user.id, True)
+
+    bot.send_message(chat_id=message.chat.id, text="Пользователь {} теперь администратор".format(user.username))
+    menu_admin_users(message)
+
+
+@bot.message_handler(func=lambda message: message.text and message.text.lower().strip().startswith('/revoke_admin_'))
+def revoke_admin(message):
+    user = dbhelper.find(int(message.text.split('_')[-1]))
+    dbhelper.toggle_admin(user.id, False)
+
+    bot.send_message(chat_id=message.chat.id, text="Пользователь {} больше не администратор".format(user.username))
+    menu_admin_users(message)
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -538,6 +595,8 @@ def callback_query(call):
         "menu": show_menu_route,
         "menu_admin": menu_admin,
         "menu_admin_requests": menu_admin_requests,
+        "menu_admin_users": menu_admin_users,
+        "menu_admin_mailing": menu_admin_mailing
     }
 
     if call.data.startswith("action_subscribe_track_"):
@@ -562,6 +621,8 @@ def callback_query(call):
         method = partial(menu_schedule_hourly, day=int(call.data.split("_")[-1]))
     elif call.data.startswith("menu_admin_requests_"):
         method = partial(menu_admin_requests, page=int(call.data.split("_")[-1]))
+    elif call.data.startswith("menu_admin_users_"):
+        method = partial(menu_admin_users, page=int(call.data.split("_")[-1]))
     else:
         method = routing.get(call.data, show_menu_route)
 
@@ -580,13 +641,13 @@ def start(message):
         dbhelper.insert(message.chat.id, message.from_user.username,
                         " ".join(
                             filter(lambda x: bool(x), [message.from_user.first_name, message.from_user.last_name])))
-        show_main_menu(message.chat.id, "Здравствуйте, {} :)".format(username), force=True)
+        show_main_menu(message.chat.id, "Здравствуйте, {} :)\n\n".format(username) + GREETING, force=True)
 
 
 @bot.message_handler(func=lambda message: message.text and message.text.lower().strip() in ["меню", "menu"])
 @log
 def menu(message):
-    show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+    show_main_menu(message.chat.id, text=GREETING, force=True)
 
 
 def typing_admin_menu(message):
@@ -660,6 +721,7 @@ def admin_typing(message):
         bot.send_message(chat_id=message.chat.id, text=text, reply_markup=markup_send_or_cancel(True),
                          parse_mode="Markdown")
 
+
 @bot.edited_message_handler(func=typing_admin_menu)
 @log
 def reply_updating(message):
@@ -690,260 +752,8 @@ def default(message):
                                     "\nДавайте ограничимся меню взаимодействия?", force=True)
 
 
-# ==============Команды администратора=================
-@bot.message_handler(commands=["admin"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_admin_help(message):
-    cid = message.chat.id
-    help_admin = "Список доступных команд для администратора: \n"
-    for key in administration:
-        help_admin += "/" + key + ": "
-        help_admin += administration[key] + "\n"
-    bot.send_message(cid, help_admin)
-
-
-# новостная рассылка (без учета подписки)
-@bot.message_handler(commands=["emergency_post"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_send(message):
-    sent = bot.send_message(message.chat.id, "Напишите пост. Его увидят все пользователи без исключения."
-                                             "\nБудьте внимательны, его нельзя будет редактировать!"
-                                             "\nДля отмены написания используйте команду /cancel")
-    bot.register_next_step_handler(sent, sending)
-
-
-@log
-def sending(message: types.Message):
-    if message.text == "/cancel":
-        bot.send_message(message.chat.id, "рассылка была отменена")
-
-    else:
-        users_data = json.load(open(data.storage_name))
-        for user in users_data["_default"]:
-            uid = users_data["_default"][user]["id"]
-            if message.content_type == "text":
-                bot.send_message(uid, str(message.text))
-
-            elif message.content_type == "photo":
-                photo = message.photo[-1].file_id
-                bot.send_photo(uid, photo, message.caption)
-
-            else:
-                bot.send_message(message.chat.id, "Вы отправили сообщение не поддерживаемого типа. "
-                                                  "Пожалуйста, попробуйте снова после команды /send")
-
-
-# новостная рассылка (с учетом подписки)
-@bot.message_handler(commands=["send_post"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_send(message):
-    sent = bot.send_message(message.chat.id, "Напишите пост. Его увидят все пользователи, "
-                                             "подписанные на новостную рассылку."
-                                             "\nБудьте внимательны, его нельзя будет редактировать!"
-                                             "\nДля отмены написания используйте команду /cancel")
-    bot.register_next_step_handler(sent, sending)
-
-
-@log
-def sending(message: types.Message):
-    if message.text == "/cancel":
-        bot.send_message(message.chat.id, "рассылка была отменена")
-
-    else:
-        list_of_users = dbhelper.find_all_subs()
-        for user in list_of_users:
-            if message.content_type == "text":
-                bot.send_message(user["id"], str(message.text))
-
-            elif message.content_type == "photo":
-                photo = message.photo[-1].file_id
-                bot.send_photo(user["id"], photo, message.caption)
-
-            else:
-                bot.send_message(message.chat.id, "Вы отправили сообщение не поддерживаемого типа. "
-                                                  "Пожалуйста, попробуйте снова после команды /send")
-
-
-# массовая рассылка по направлениям
-@bot.message_handler(commands=["direct_post"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_directly(message):
-    sent = bot.send_message(message.chat.id, "Выбор направления для рассылки",
-                            "\nДля отмены написания используйте команду /cancel")
-    bot.register_next_step_handler(sent, direction_choose)
-
-
-# выбор направления для рассылки
-def direction_choose(message):
-    bot.send_message(message.chat.id, text="mobile == Мобильная разработка\n"
-                                           "quality == Контроль качества\n"
-                                           "database == Базы данных\n"
-                                           "design == Дизайн и компьютерная графика\n"
-                                           "frontend == Frontend программирование\n"
-                                           "leading == Управление проектами (управление распределенными командами)\n"
-                                           "IoT == Интернет вещей (IoT)\n"
-                                           "data_science == AI, ML, BigData\n"
-                                           "start_up == Start ups\n"
-                                           "vr == VR/AR\n"
-                                           "gamedev == GameDev\n"
-                                           "devops == DevOps\n"
-                                           "java == Java-программирование\n"
-                                           "master == Мастер-классы")
-    if message.text == "/cancel":
-        bot.send_message(message.chat.id, "Рассылка была отменена")
-
-    elif message.text in data.tracks:
-        logger.debug(message.text)
-        direction_data = partial(direction_send, message.text)
-        sent = bot.send_message(message.chat.id, "Направление: " + message.text + "\nВведите текст")
-        bot.register_next_step_handler(sent, direction_data)
-
-    else:
-        bot.send_message(message.chat.id, "Несуществующее направление")
-
-
-# рассылка по выбранному направлению
-def direction_send(direction, message):
-    list_of_users = dbhelper.find_all_by_dir(direction)
-    logger.debug(direction)
-    logger.debug(list_of_users)
-    for user in list_of_users:
-        if message.content_type == "text":
-            bot.send_message(user["id"], str(message.text))
-
-        elif message.content_type == "photo":
-            photo = message.photo[-1].file_id
-            bot.send_photo(user["id"], photo, message.caption)
-
-        else:
-            bot.send_message(message.chat.id, "Вы отправили сообщение не поддерживаемого типа. "
-                                              "Пожалуйста, попробуйте снова после команды /send")
-
-
-# добавление администратора
-@bot.message_handler(commands=["add_admin"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_add_admin(message):
-    sent = bot.send_message(message.chat.id, "Введите id пользователя, которому вы хотите дать права администратора"
-                                             "\nПредставлен набором чисел. "
-                                             "\nЧтобы узнать свой id - воспользуйтесь @userinfobot."
-                                             "\nДля отмены действия воспользуйтесь командой /cancel")
-    bot.register_next_step_handler(sent, adding)
-
-
-@log
-def adding(message):
-    if message.text == "/cancel":
-        bot.send_message(message.chat.id, "Действие отменено")
-
-    else:
-        try:
-            id_to_add = int(message.text)
-            user = dbhelper.find_by_id(id_to_add)
-
-            if user:
-                if user.is_admin:
-                    bot.send_message(message.chat.id, "Пользователь уже является администратором")
-
-                else:
-                    dbhelper.add_admin(id_to_add)
-                    bot.send_message(message.chat.id, "Администратор успешно добавлен!")
-                    bot.send_message(id_to_add, "Поздравляю с получением прав администратора!\n"
-                                                "Чтобы ознакомиться с полным набором доступных Вам комманд, \n"
-                                                "воспользуйтесь /admin")
-            else:
-                bot.send_message(message.chat.id, "Пользователь не найден!")
-
-        except ValueError:
-            bot.send_message(message.chat.id, "Возникла ошибка типа. "
-                                              "Возможно вводимый id состоял не только из чисел или содержал пробелы")
-
-
-# вывод всех существующих администраторов
-@bot.message_handler(commands=["list_admin"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_list_admin(message):
-    res = dbhelper.get_all_admins()
-    count = 0
-    for i in res:
-        count = count + 1
-        bot.send_message(message.chat.id,
-                         "Администратор №" + str(count) +
-                         "\nИмя пользователя: " + str(i["username"]) +
-                         "\nID пользователя: " + str(i["id"]))
-
-    bot.send_message(message.chat.id, "Всего администраторов: " + str(count))
-
-
-# удаление выбранного администратора
-@bot.message_handler(commands=["remove_admin"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_remove_admin(message):
-    sent = bot.send_message(message.chat.id, "Введите id пользователя, которого вы хотите лишить прав администратора"
-                                             "\nПредставлен набором чисел. "
-                                             "\nЧтобы узнать свой id - воспользуйтесь @userinfobot."
-                                             "\nДля отмены действия воспользуйтесь командой /cancel")
-    bot.register_next_step_handler(sent, removing)
-
-
-@log
-def removing(message):
-    if message.text == "/cancel":
-        bot.send_message(message.chat.id, "Действие отменено")
-    else:
-        try:
-            id_to_remove = int(message.text)
-            user = dbhelper.find_by_id(id_to_remove)
-
-            if not user:
-                bot.send_message(message.chat.id, "Пользователь не найден!")
-                return
-
-            if user.is_admin:
-                dbhelper.remove_admin(id_to_remove)
-                bot.send_message(message.chat.id, "Администратор успешно удален!")
-
-            else:
-                bot.send_message(message.chat.id, "Пользователь не является администратором")
-
-        except ValueError:
-            bot.send_message(message.chat.id, "Возникла ошибка типа. "
-                                              "Возможно вводимый id состоял не только из чисел или содержал пробелы")
-
-
-# поиск пользователя по id
-@bot.message_handler(commands=["find_by_id"], func=lambda message: dbhelper.check_adm(message.chat.id))
-@log
-def command_find_by_id(message):
-    sent = bot.send_message(message.chat.id, "Введите id пользователя, данные о котором вы ходите получить"
-                                             "\nПредставлен набором чисел. "
-                                             "\nЧтобы узнать свой id - воспользуйтесь @userinfobot."
-                                             "\nДля отмены действия воспользуйтесь командой /cancel")
-    bot.register_next_step_handler(sent, find_by_id)
-
-
-@log
-def find_by_id(message):
-    if message.text == "/cancel":
-        bot.send_message(message.chat.id, "Действие отменено")
-
-    else:
-        try:
-            id_to_find = int(message.text)
-            user = dbhelper.find_by_id(id_to_find)
-
-            if user:
-                bot.send_message(message.chat.id,
-                                 "ID пользователя: " + str(user["id"]) +
-                                 "\nИмя пользователя: " + str(user["username"]) +
-                                 "\nПодписка на новости с глобальной рассылки: " + str(user["subscription"]) +
-                                 "\nНаправления, на которые оформлена подписка: " + str(user["directions"]))
-            else:
-                bot.send_message(message.chat.id, "Пользователь не найден!")
-
-        except ValueError:
-            bot.send_message(message.chat.id, "Возникла ошибка типа. "
-                                              "Возможно вводимый id состоял не только из чисел или содержал пробелы")
-
-
+# while True:
+#     try:
 bot.polling(none_stop=True)
+    # except:
+    #     print("Something wrong")

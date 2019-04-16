@@ -12,8 +12,11 @@ def insert(telegram_id, username, name):
         user.save()
 
 
-def get_all_users():
-    return [u for u in User.select()]
+def get_all_users(page=None):
+    if page is None:
+        return [u for u in User.select()]
+    else:
+        return [u for u in User.select().limit(11).offset((page - 1))]
 
 
 def get_all_tracks():
@@ -30,8 +33,12 @@ def get_user_tracks(telegram_id):
     return [t for t in tracks]
 
 
+def find(id):
+    return User.get_or_none(User.id == int(id))
+
+
 def find_by_id(telegram_id):
-    return User.get_or_none(User.telegram_id == telegram_id)
+    return User.get_or_none(User.telegram_id == int(telegram_id))
 
 
 def toggle_typing(telegram_id, state=None, admin=False):
@@ -40,8 +47,8 @@ def toggle_typing(telegram_id, state=None, admin=False):
     if state is None:
         user.state = User.STATE_TYPING if not user.is_typing else User.STATE_REGULAR
     else:
-        state = User.STATE_ADMIN_TYPING if admin else User.STATE_TYPING
-        user.state = state if state else User.STATE_REGULAR
+        target_state = User.STATE_ADMIN_TYPING if admin else User.STATE_TYPING
+        user.state = target_state if state else User.STATE_REGULAR
 
     user.save()
 
@@ -59,6 +66,13 @@ def check_adm(telegram_id):
     user = find_by_id(telegram_id)
 
     return user and user.is_admin
+
+
+def toggle_admin(id, is_admin):
+    user = find(id)
+
+    user.is_admin = is_admin
+    user.save()
 
 
 def toggle_subscription(telegram_id, subscribed=True):
