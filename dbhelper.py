@@ -3,12 +3,17 @@ import json
 from models import *
 
 
-def insert(telegram_id, username):
-    user, created = User.get_or_create(telegram_id=telegram_id, defaults={'username': username})
+def insert(telegram_id, username, name):
+    user, created = User.get_or_create(telegram_id=telegram_id, defaults={'username': username, 'name': name})
 
     if not created:
         user.username = username
+        user.name = name
         user.save()
+
+
+def get_all_users():
+    return [u for u in User.select()]
 
 
 def get_all_tracks():
@@ -29,21 +34,25 @@ def find_by_id(telegram_id):
     return User.get_or_none(User.telegram_id == telegram_id)
 
 
-def toggle_typing(telegram_id, state=None):
+def toggle_typing(telegram_id, state=None, admin=False):
     user = find_by_id(telegram_id)
 
     if state is None:
         user.state = User.STATE_TYPING if not user.is_typing else User.STATE_REGULAR
     else:
-        user.state = User.STATE_TYPING if state else User.STATE_REGULAR
+        state = User.STATE_ADMIN_TYPING if admin else User.STATE_TYPING
+        user.state = state if state else User.STATE_REGULAR
 
     user.save()
 
 
-def check_typing(telegram_id):
+def check_typing(telegram_id, admin=False):
     user = find_by_id(telegram_id)
 
-    return user and user.is_typing
+    if not user:
+        return False
+
+    return user.state == User.STATE_TYPING and not admin or user.state == User.STATE_ADMIN_TYPING and admin
 
 
 def check_adm(telegram_id):
@@ -87,6 +96,26 @@ def create_support_request(telegram_id, message):
     Request.create(user=user, message=json.dumps(message))
 
 
+def get_support_request(id):
+    return Request.get_or_none(Request.id == id)
+
+
+def get_support_requests(page=1):
+    return Request.select().where(Request.published == False).order_by(Request.id).paginate(page, 5)
+
+
+def count_support_requests():
+    return Request.select().where(Request.published == False).count()
+
+
+def mark_support_request_as_read(id):
+    Request.update(published=True).where(Request.id == id).execute()
+
+
+def mark_all_support_requests_as_read():
+    Request.update(published=True).where(Request.published == False).execute()
+
+
 def add_admin(user_id):
     pass
     # with TinyDB(data.storage_name) as db:
@@ -101,7 +130,7 @@ def remove_admin(user_id):
     #     db.update({"administrator": False}, user.id == user_id)
 
 
-def get_all_admin():
+def get_all_admins():
     return [user for user in User.select().where(User.is_admin == True)]
 
 

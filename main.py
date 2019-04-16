@@ -4,6 +4,7 @@ import json
 import logging
 from functools import partial
 from datetime import datetime
+from random import choice
 
 from telebot import types, TeleBot
 from telebot.apihelper import ApiException
@@ -48,18 +49,20 @@ def log(func):
     return _
 
 
-def show_main_menu(chat_id, text, force=False):
+def show_main_menu(chat_id, text, force=False, markup=None):
     user = dbhelper.find_by_id(chat_id)
 
+    reply_markup = markup(user and user.is_admin) if markup is not None else markup_menu(user and user.is_admin)
+
     if force or not user.last_menu_message_id:
-        reply = bot.send_message(chat_id, text, reply_markup=markup_menu(user and user.is_admin))
+        reply = bot.send_message(chat_id, text, reply_markup=reply_markup)
         dbhelper.save_last_menu_message_id(chat_id, reply.message_id)
     else:
         try:
             show_menu(chat_id=chat_id, message_id=user.last_menu_message_id, text=text,
-                      markup=markup_menu(user and user.is_admin))
+                      markup=reply_markup)
         except ApiException:
-            show_main_menu(chat_id, text, True)
+            show_main_menu(chat_id, text, True, markup=reply_markup)
 
 
 def show_menu(chat_id, text, markup, preview=True, message_id=None):
@@ -81,7 +84,20 @@ def markup_menu(is_admin=False):
                types.InlineKeyboardButton("Связь с организаторами", callback_data="action_contact"))
 
     if is_admin:
-        markup.row(types.InlineKeyboardButton("Администрирование", callback_data="menu"))
+        markup.row(types.InlineKeyboardButton("Администрирование", callback_data="menu_admin"))
+
+    return markup
+
+
+def markup_admin_menu(*_, **__):
+    count = dbhelper.count_support_requests()
+
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 1
+    markup.add(types.InlineKeyboardButton("Рассылка", callback_data="menu_admin_mailing"),
+               types.InlineKeyboardButton("Пользователи", callback_data="menu_admin_users"),
+               types.InlineKeyboardButton("Обращения ({})".format(count), callback_data="menu_admin_requests"))
+    markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu"))
 
     return markup
 
@@ -149,8 +165,21 @@ def markup_subscribe_news(user):
     return markup
 
 
-def keyboard_contact():
-    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+def markup_send_or_cancel(is_admin=False):
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 2
+    markup.add(
+        types.InlineKeyboardButton(text="Отправить",
+                                   callback_data="action_send" if not is_admin else "action_admin_send"),
+        types.InlineKeyboardButton(text="Отменить",
+                                   callback_data="action_cancel" if not is_admin else "action_admin_cancel")
+    )
+
+    return markup
+
+
+def keyboard_send_or_cancel():
+    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=False, resize_keyboard=True)
     keyboard.row_width = 1
     keyboard.add(types.KeyboardButton(text="Отправить"), types.KeyboardButton(text="Отменить"))
 
@@ -162,6 +191,48 @@ def keyboard_menu():
     keyboard.add(types.KeyboardButton(text="Меню"))
 
     return keyboard
+
+
+def keyboard_admin_requests(has_requests=True):
+    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    keyboard.row_width = 1
+    if has_requests:
+        keyboard.add(types.KeyboardButton(text="Отметить все прочитанными"))
+    keyboard.add(types.KeyboardButton(text="« Назад"))
+
+    return keyboard
+
+
+def menu_admin(message):
+    show_menu(chat_id=message.chat.id, text="Управление ботом:", markup=markup_admin_menu())
+
+
+def menu_admin_requests(message, page=1):
+    dbhelper.toggle_typing(message.chat.id, True, True)
+    count = dbhelper.count_support_requests()
+
+    plural = [
+        'ое' if str(count)[-1] == '1' and str(count)[-2:] != '11' else 'ых',
+        'е' if str(count)[-1] == '1' and str(count)[-2:] != '11' else 'й',
+        'я' if str(count)[-1] == '1' and str(count)[-2:] != '11' else 'ей',
+    ]
+    text = "Найдено {} непрочитанн{} обращени{} от пользовател{}".format(count, *plural)
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_admin_requests(count > 0))
+
+    for request in dbhelper.get_support_requests(page=page):
+        request_message = "*{name}* [@{username}](tg://user?id={username}):\n".format(name=request.user.name,
+                                                                                      username=request.user.username)
+        request_message += "\n".join(json.loads(request.message).values())
+
+        markup = types.InlineKeyboardMarkup()
+        markup.row_width = 2
+        markup.add(types.InlineKeyboardButton("Ответить", callback_data="action_admin_reply_{}".format(request.id)),
+                   types.InlineKeyboardButton("Опубликовать",
+                                              callback_data="action_admin_publish_{}".format(request.id)),
+                   types.InlineKeyboardButton("Отметить прочитанным",
+                                              callback_data="action_admin_mark_as_read_{}".format(request.id)))
+
+        bot.send_message(chat_id=message.chat.id, text=request_message, reply_markup=markup, parse_mode="Markdown")
 
 
 def menu_schedule(message):
@@ -345,7 +416,103 @@ def action_contact(message):
     text = "Если у Вас возник какой-то вопрос или Вы что-то потеряли и очень хотите найти" \
            ", напишите здесь и мы обязательно Вам ответим!"
 
-    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_contact())
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_send_or_cancel())
+
+
+def action_send(message):
+    text = support_request_cache.get(message.chat.id, {})
+
+    if text:
+        dbhelper.create_support_request(message.chat.id, text)
+        dbhelper.toggle_typing(message.chat.id, False)
+
+        support_request_cache[message.chat.id] = {}
+
+        bot.send_message(chat_id=message.chat.id, text="Сообщение организаторам успешно отправлено",
+                         reply_markup=keyboard_menu())
+        show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+
+        user = dbhelper.find_by_id(message.chat.id)
+
+        text = "Получено новое сообщение от пользователя [@{username}](tg://user?id={username})".format(
+            username=user.username)
+
+        for admin in dbhelper.get_all_admins():
+            bot.send_message(chat_id=admin.telegram_id, text=text, parse_mode="Markdown")
+    else:
+        bot.send_message(chat_id=message.chat.id,
+                         text="Сперва напишите сообщение, которое хотите отправить администрации",
+                         reply_markup=markup_send_or_cancel())
+
+
+def action_admin_send(message):
+    dbhelper.toggle_typing(message.chat.id, False, True)
+    if message.chat.id not in support_request_cache:
+        menu_admin_requests(message)
+        return
+
+    request = dbhelper.get_support_request(support_request_cache[message.chat.id]["id"])
+
+    if 'text' not in support_request_cache[message.chat.id]:
+        for user in dbhelper.get_all_users():
+            if user.telegram_id == message.chat.id:
+                continue
+
+            messages = json.loads(request.message)
+            for id in messages.keys():
+                bot.forward_message(chat_id=user.telegram_id, from_chat_id=request.user.telegram_id, message_id=id)
+    else:
+        message_id = list(json.loads(request.message).keys())[-1]
+
+        bot.send_message(chat_id=request.user.telegram_id, reply_to_message_id=message_id,
+                         text=support_request_cache[message.chat.id]['text'])
+
+    dbhelper.mark_support_request_as_read(request.id)
+    support_request_cache[message.chat.id] = {}
+
+    menu_admin_requests(message)
+
+
+def action_admin_cancel(message):
+    dbhelper.toggle_typing(message.chat.id, False, True)
+    support_request_cache[message.chat.id] = {}
+
+    bot.send_message(chat_id=message.chat.id, text="Действие отменено")
+    menu_admin_requests(message)
+
+
+def action_cancel(message):
+    dbhelper.toggle_typing(message.chat.id, False)
+    support_request_cache[message.chat.id] = {}
+
+    bot.send_message(chat_id=message.chat.id, text="Действие отменено", reply_markup=keyboard_menu())
+    show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+
+
+def action_admin_publish(message, id):
+    dbhelper.toggle_typing(message.chat.id, True, True)
+    request = dbhelper.get_support_request(id)
+
+    support_request_cache[message.chat.id] = {"id": id}
+
+    text = "Вы действительно хотите отправить всем сообщение от пользователя {} с текстом:```{}```?".format(
+        "[@{username}](tg://user?id={username})".format(username=request.user.username),
+        "\n".join(json.loads(request.message).values()))
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=markup_send_or_cancel(True),
+                     parse_mode="Markdown")
+
+
+def action_admin_reply(message, id):
+    dbhelper.toggle_typing(message.chat.id, True, True)
+    request = dbhelper.get_support_request(id)
+
+    support_request_cache[message.chat.id] = {"id": id}
+
+    text = "Напишите сообщение, которое хотите отправить пользователю {} в ответ на ```{}```.".format(
+        "[@{username}](tg://user?id={username})".format(username=request.user.username),
+        "\n".join(json.loads(request.message).values()))
+
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_send_or_cancel(), parse_mode="Markdown")
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -364,7 +531,13 @@ def callback_query(call):
         "menu_subscribe_news": menu_subscribe_news,
         "action_subscribe_news": action_subscribe_news,
         "action_contact": action_contact,
-        "menu": show_menu_route
+        "action_send": action_send,
+        "action_admin_send": action_admin_send,
+        "action_cancel": action_cancel,
+        "action_admin_cancel": action_admin_cancel,
+        "menu": show_menu_route,
+        "menu_admin": menu_admin,
+        "menu_admin_requests": menu_admin_requests,
     }
 
     if call.data.startswith("action_subscribe_track_"):
@@ -377,8 +550,18 @@ def callback_query(call):
         day, time = call.data.split("_")[-2:]
 
         method = partial(action_schedule_hourly, day=int(day), time=time)
+    elif call.data.startswith("action_admin_publish_"):
+        id = int(call.data.split("_")[-1])
+
+        method = partial(action_admin_publish, id=id)
+    elif call.data.startswith("action_admin_reply_"):
+        id = int(call.data.split("_")[-1])
+
+        method = partial(action_admin_reply, id=id)
     elif call.data.startswith("menu_schedule_hourly_"):
         method = partial(menu_schedule_hourly, day=int(call.data.split("_")[-1]))
+    elif call.data.startswith("menu_admin_requests_"):
+        method = partial(menu_admin_requests, page=int(call.data.split("_")[-1]))
     else:
         method = routing.get(call.data, show_menu_route)
 
@@ -394,14 +577,20 @@ def start(message):
     if user:
         show_main_menu(message.chat.id, "С возвращением, {} :)".format(username), force=True)
     else:
-        dbhelper.insert(message.chat.id, message.from_user.username)
+        dbhelper.insert(message.chat.id, message.from_user.username,
+                        " ".join(
+                            filter(lambda x: bool(x), [message.from_user.first_name, message.from_user.last_name])))
         show_main_menu(message.chat.id, "Здравствуйте, {} :)".format(username), force=True)
 
 
-@bot.message_handler(func=lambda message: message.text.lower().strip() in ["меню", "menu"])
+@bot.message_handler(func=lambda message: message.text and message.text.lower().strip() in ["меню", "menu"])
 @log
 def menu(message):
     show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+
+
+def typing_admin_menu(message):
+    return dbhelper.check_typing(message.chat.id, admin=True)
 
 
 def typing_menu(message):
@@ -411,39 +600,85 @@ def typing_menu(message):
 @bot.message_handler(func=typing_menu)
 @log
 def support_request_typing(message):
+    if not message.text:
+        return
+
     if message.text.lower().strip() == 'отменить':
-        dbhelper.toggle_typing(message.chat.id, False)
-
-        bot.send_message(chat_id=message.chat.id, text="Действие отменено", reply_markup=keyboard_menu())
-        show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+        action_cancel(message)
     elif message.text.lower().strip() == 'отправить':
-        text = support_request_cache.get(message.chat.id, {})
-
-        if text:
-            dbhelper.create_support_request(message.chat.id, text)
-            dbhelper.toggle_typing(message.chat.id, False)
-
-            support_request_cache[message.chat.id] = {}
-
-            bot.send_message(chat_id=message.chat.id, text="Сообщение организаторам успешно отправлено",
-                             reply_markup=keyboard_menu())
-            show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
-        else:
-            bot.send_message(chat_id=message.chat.id,
-                             text="Сперва напишите сообщение, которое хотите отправить администрации",
-                             reply_markup=keyboard_contact())
+        action_send(message)
     else:
         if not support_request_cache.get(message.chat.id):
             support_request_cache[message.chat.id] = {}
 
         support_request_cache[message.chat.id].update({message.message_id: message.text})
 
+        texts = [
+            "Отлично, теперь нажмите *Отправить*, чтобы мы получили Ваше сообщение или напишите еще одно.",
+            "Окей, Вы можете написать еще одно сообщение или нажать *Отправить*, чтобы мы получили Ваше сообщение."
+        ]
+
+        bot.send_message(chat_id=message.chat.id, text=choice(texts), reply_markup=markup_send_or_cancel(),
+                         parse_mode="Markdown")
+
+
+@bot.message_handler(func=typing_admin_menu)
+@log
+def admin_typing(message):
+    if not message.text:
+        return
+
+    if message.text.lower().strip() == 'отметить все прочитанными':
+        dbhelper.mark_all_support_requests_as_read()
+
+        bot.send_message(chat_id=message.chat.id, text="Все обращения отмечены как прочитанные",
+                         reply_markup=keyboard_admin_requests(False))
+    elif message.text.lower().strip() == '« назад':
+        dbhelper.toggle_typing(message.chat.id, False, True)
+        bot.send_message(chat_id=message.chat.id, text="Работа с обращениями завершена", reply_markup=keyboard_menu())
+
+        show_main_menu(message.chat.id, text="Управление ботом:", force=True, markup=markup_admin_menu)
+    elif message.text.lower().strip() == 'отправить':
+        action_admin_send(message)
+    elif message.text.lower().strip() == 'отменить':
+        action_admin_cancel(message)
+    else:
+        if message.chat.id not in support_request_cache:
+            bot.send_message(chat_id=message.chat.id, text="Произошла ошибка. Попробуйте ответить еще раз.",
+                             reply_markup=keyboard_menu(), parse_mode="Markdown")
+            menu_admin_requests(message)
+            return
+
+        if 'text' in support_request_cache[message.chat.id]:
+            support_request_cache[message.chat.id].update(
+                {'text': support_request_cache[message.chat.id]['text'] + "\n" + message.text})
+        else:
+            support_request_cache[message.chat.id].update({'text': message.text})
+
+        text = "*Вы написали:*\n{}\nОтправляем?".format(message.text)
+
+        bot.send_message(chat_id=message.chat.id, text=text, reply_markup=markup_send_or_cancel(True),
+                         parse_mode="Markdown")
+
+@bot.edited_message_handler(func=typing_admin_menu)
+@log
+def reply_updating(message):
+    if message.chat.id not in support_request_cache:
+        return
+
+    support_request_cache[message.chat.id].update({message.message_id: message.text})
+
+    text = "Вы изменили сообщение: {}\nОтправляем?".format(message.text)
+
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=markup_send_or_cancel(True),
+                     parse_mode="Markdown")
+
 
 @bot.edited_message_handler(func=typing_menu)
 @log
 def support_request_updating(message):
-    if not support_request_cache.get(message.chat.id):
-        pass
+    if message.chat.id not in support_request_cache:
+        return
 
     support_request_cache[message.chat.id].update({message.message_id: message.text})
 
@@ -628,7 +863,7 @@ def adding(message):
 @bot.message_handler(commands=["list_admin"], func=lambda message: dbhelper.check_adm(message.chat.id))
 @log
 def command_list_admin(message):
-    res = dbhelper.get_all_admin()
+    res = dbhelper.get_all_admins()
     count = 0
     for i in res:
         count = count + 1

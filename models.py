@@ -11,6 +11,7 @@ class User(Model):
     STATE_ADMIN_TYPING = 2
 
     telegram_id = IntegerField(unique=True)
+    name = CharField(null=True)
     username = CharField(null=True)
     is_admin = BooleanField(default=False)
     is_subscribed = BooleanField(default=True)
