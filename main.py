@@ -5,6 +5,7 @@ import logging
 from functools import partial
 from datetime import datetime
 from random import choice
+from time import sleep
 
 from telebot import types, TeleBot
 from telebot.apihelper import ApiException
@@ -69,6 +70,14 @@ def show_menu(chat_id, text, markup, preview=True, message_id=None):
     bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown",
                           disable_web_page_preview=(not preview))
     bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=markup)
+
+
+def markup_show_menu():
+    markup = types.InlineKeyboardMarkup()
+    markup.row_width = 1
+    markup.row(types.InlineKeyboardButton("Меню", callback_data="menu_force"))
+
+    return markup
 
 
 def markup_menu(is_admin=False):
@@ -266,9 +275,9 @@ def menu_admin_users(message, page=1):
 def menu_admin_mailing(message):
     markup = types.InlineKeyboardMarkup()
     markup.row_width = 1
-    markup.add(types.InlineKeyboardButton("ВСЕМ пользователям", callback_data="action_mailing_all"),
-               types.InlineKeyboardButton("По подписке", callback_data="action_mailing_subscribed"),
-               types.InlineKeyboardButton("По направлению", callback_data="action_mailing_track"))
+    markup.add(types.InlineKeyboardButton("ВСЕМ пользователям", callback_data="action_admin_mailing_all"),
+               types.InlineKeyboardButton("По подписке", callback_data="action_admin_mailing_subscribed"),
+               types.InlineKeyboardButton("По направлению", callback_data="action_admin_mailing_track"))
     markup.row(types.InlineKeyboardButton("« Назад", callback_data="menu_admin"))
 
     show_menu(chat_id=message.chat.id, text="Выберите тип рассылки", markup=markup)
@@ -446,7 +455,7 @@ def action_subscribe_track(message, track_id):
 
 def action_location(message):
     bot.send_message(chat_id=message.chat.id, text="Адрес: \nпр. Строителей, 168А, Пенза", reply_markup=keyboard_menu())
-    bot.send_location(chat_id=message.chat.id, latitude=53.220670, longitude=44.883901)
+    bot.send_location(chat_id=message.chat.id, latitude=53.220670, longitude=44.883901, reply_markup=markup_show_menu())
 
 
 def action_contact(message):
@@ -469,7 +478,7 @@ def action_send(message):
 
         bot.send_message(chat_id=message.chat.id, text="Сообщение организаторам успешно отправлено",
                          reply_markup=keyboard_menu())
-        show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+        show_main_menu(message.chat.id, text=GREETING, force=True)
 
         user = dbhelper.find_by_id(message.chat.id)
 
@@ -490,9 +499,11 @@ def action_admin_send(message):
         menu_admin_requests(message)
         return
 
-    request = dbhelper.get_support_request(support_request_cache[message.chat.id]["id"])
+    message_type = support_request_cache[message.chat.id].get("type", "forward")
 
-    if support_request_cache[message.chat.id].get("type", "forward") == "forward":
+    if message_type == "forward":
+        request = dbhelper.get_support_request(support_request_cache[message.chat.id]["id"])
+
         for user in dbhelper.get_all_users():
             if user.telegram_id == message.chat.id:
                 continue
@@ -500,24 +511,56 @@ def action_admin_send(message):
             messages = json.loads(request.message)
             for id in messages.keys():
                 bot.forward_message(chat_id=user.telegram_id, from_chat_id=request.user.telegram_id, message_id=id)
+
+        dbhelper.mark_support_request_as_read(request.id)
+    elif message_type == "emergency" or message_type == "mailing":
+        for user in dbhelper.get_all_users():
+            if message_type == "mailing" and not user.is_subscribed:
+                continue
+
+            if "photo" in support_request_cache[message.chat.id]:
+                bot.send_photo(chat_id=user.telegram_id, caption=support_request_cache[message.chat.id].get("caption"),
+                               photo=support_request_cache[message.chat.id]["photo"], reply_markup=markup_show_menu())
+            elif "text" in support_request_cache[message.chat.id]:
+                bot.send_message(chat_id=user.telegram_id, text=support_request_cache[message.chat.id]["text"],
+                                 parse_mode="Markdown", reply_markup=markup_show_menu())
+            else:
+                continue
     else:
+        request = dbhelper.get_support_request(support_request_cache[message.chat.id]["id"])
+
         message_id = list(json.loads(request.message).keys())[-1]
 
         bot.send_message(chat_id=request.user.telegram_id, reply_to_message_id=message_id,
-                         text=support_request_cache[message.chat.id]["text"])
+                         text=support_request_cache[message.chat.id]["text"], reply_markup=markup_show_menu())
 
-    dbhelper.mark_support_request_as_read(request.id)
+        dbhelper.mark_support_request_as_read(request.id)
+
+    if support_request_cache[message.chat.id].get("type") in ["mailing", "emergency", "track"]:
+        menu_admin_mailing(message)
+    else:
+        menu_admin_requests(message)
+
     support_request_cache[message.chat.id] = {}
-
-    menu_admin_requests(message)
 
 
 def action_admin_cancel(message):
     dbhelper.toggle_typing(message.chat.id, False, True)
+
+    if message.chat.id in support_request_cache:
+        is_mailing = support_request_cache[message.chat.id].get("type") in ["mailing", "emergency", "track"]
+    else:
+        bot.send_message(chat_id=message.chat.id, text="Действие отменено", reply_markup=keyboard_menu())
+        show_main_menu(chat_id=message.chat.id, text="Управление ботом:", force=True, markup=markup_admin_menu)
+        return
+
     support_request_cache[message.chat.id] = {}
 
     bot.send_message(chat_id=message.chat.id, text="Действие отменено")
-    menu_admin_requests(message)
+    if is_mailing:
+        show_main_menu(chat_id=message.chat.id, text="Управление ботом:", force=True, markup=markup_admin_menu)
+    else:
+        menu_admin_requests(message)
 
 
 def action_cancel(message):
@@ -525,7 +568,7 @@ def action_cancel(message):
     support_request_cache[message.chat.id] = {}
 
     bot.send_message(chat_id=message.chat.id, text="Действие отменено", reply_markup=keyboard_menu())
-    show_main_menu(message.chat.id, text="Меню взаимодействия:", force=True)
+    show_main_menu(message.chat.id, text=GREETING, force=True)
 
 
 def action_admin_publish(message, id):
@@ -554,6 +597,34 @@ def action_admin_reply(message, id):
     bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_send_or_cancel(), parse_mode="Markdown")
 
 
+def action_admin_mark_as_read(message, id):
+    dbhelper.mark_support_request_as_read(id)
+
+    bot.send_message(chat_id=message.chat.id, text="Сообщение помечено прочитанным")
+    menu_admin_requests(message)
+
+
+def action_admin_mailing_all(message):
+    dbhelper.toggle_typing(message.chat.id, True, True)
+
+    support_request_cache[message.chat.id] = {"type": "emergency"}
+    text = "Напишите сообщение, которое хотите отправить всем пользователям бота.\n"
+    text += "*ВНИМАНИЕ* сообщение будет отправлено ВСЕМ пользователям, независимо от того, \n"
+    text += "подписались они на рассылку или нет"
+
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_send_or_cancel(), parse_mode="Markdown")
+
+
+def action_admin_mailing_subscribed(message):
+    dbhelper.toggle_typing(message.chat.id, True, True)
+
+    support_request_cache[message.chat.id] = {"type": "mailing"}
+    text = "Напишите сообщение, которое хотите отправить пользователям бота, подписанным на рассылку.\n"
+    text += "*ВНИМАНИЕ* для важных сообщений используйте рассылку по всем пользователям.\n"
+
+    bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard_send_or_cancel(), parse_mode="Markdown")
+
+
 @bot.message_handler(func=lambda message: message.text and message.text.lower().strip().startswith('/give_admin_'))
 def give_admin(message):
     user = dbhelper.find(int(message.text.split('_')[-1]))
@@ -575,7 +646,10 @@ def revoke_admin(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     def show_menu_route(message):
-        show_main_menu(message.chat.id, text="Меню взаимодействия:")
+        show_main_menu(message.chat.id, text=GREETING)
+
+    def show_menu_force_route(message):
+        show_main_menu(message.chat.id, text=GREETING, force=True)
 
     routing = {
         "menu_schedule": menu_schedule,
@@ -592,7 +666,10 @@ def callback_query(call):
         "action_admin_send": action_admin_send,
         "action_cancel": action_cancel,
         "action_admin_cancel": action_admin_cancel,
+        "action_admin_mailing_all": action_admin_mailing_all,
+        "action_admin_mailing_subscribed": action_admin_mailing_subscribed,
         "menu": show_menu_route,
+        "menu_force": show_menu_force_route,
         "menu_admin": menu_admin,
         "menu_admin_requests": menu_admin_requests,
         "menu_admin_users": menu_admin_users,
@@ -617,6 +694,8 @@ def callback_query(call):
         id = int(call.data.split("_")[-1])
 
         method = partial(action_admin_reply, id=id)
+    elif call.data.startswith("action_admin_mark_as_read_"):
+        method = partial(action_admin_mark_as_read, page=int(call.data.split("_")[-1]))
     elif call.data.startswith("menu_schedule_hourly_"):
         method = partial(menu_schedule_hourly, day=int(call.data.split("_")[-1]))
     elif call.data.startswith("menu_admin_requests_"):
@@ -683,40 +762,41 @@ def support_request_typing(message):
                          parse_mode="Markdown")
 
 
-@bot.message_handler(func=typing_admin_menu)
+@bot.message_handler(func=typing_admin_menu, content_types=["text", "photo"])
 @log
 def admin_typing(message):
-    if not message.text:
-        return
-
-    if message.text.lower().strip() == 'отметить все прочитанными':
+    if message.text and message.text.lower().strip() == 'отметить все прочитанными':
         dbhelper.mark_all_support_requests_as_read()
 
         bot.send_message(chat_id=message.chat.id, text="Все обращения отмечены как прочитанные",
                          reply_markup=keyboard_admin_requests(False))
-    elif message.text.lower().strip() == '« назад':
+    elif message.text and message.text.lower().strip() == '« назад':
         dbhelper.toggle_typing(message.chat.id, False, True)
         bot.send_message(chat_id=message.chat.id, text="Работа с обращениями завершена", reply_markup=keyboard_menu())
 
         show_main_menu(message.chat.id, text="Управление ботом:", force=True, markup=markup_admin_menu)
-    elif message.text.lower().strip() == 'отправить':
+    elif message.text and message.text.lower().strip() == 'отправить':
         action_admin_send(message)
-    elif message.text.lower().strip() == 'отменить':
+    elif message.text and message.text.lower().strip() == 'отменить':
         action_admin_cancel(message)
     else:
         if message.chat.id not in support_request_cache:
-            bot.send_message(chat_id=message.chat.id, text="Произошла ошибка. Попробуйте ответить еще раз.",
+            bot.send_message(chat_id=message.chat.id, text="Произошла ошибка. Попробуйте еще раз.",
                              reply_markup=keyboard_menu(), parse_mode="Markdown")
-            menu_admin_requests(message)
+            menu_admin(message)
             return
 
-        if 'text' in support_request_cache[message.chat.id]:
-            support_request_cache[message.chat.id].update(
-                {'text': support_request_cache[message.chat.id]['text'] + "\n" + message.text})
-        else:
+        if message.content_type == "text":
             support_request_cache[message.chat.id].update({'text': message.text})
 
-        text = "*Вы написали:*\n{}\nОтправляем?".format(message.text)
+            text = "*Вы написали:*\n{}\nОтправляем?".format(message.text)
+        elif message.content_type == "photo":
+            support_request_cache[message.chat.id].update(
+                {"photo": message.photo[-1].file_id, "caption": message.caption})
+
+            text = 'Вы прислали изображение. Отправляем?'
+        else:
+            text = 'Неизвестный тип сообщения. Поддерживается только текст и фотографии.'
 
         bot.send_message(chat_id=message.chat.id, text=text, reply_markup=markup_send_or_cancel(True),
                          parse_mode="Markdown")
@@ -755,5 +835,5 @@ def default(message):
 # while True:
 #     try:
 bot.polling(none_stop=True)
-    # except:
-    #     print("Something wrong")
+# except:
+#     print("Something wrong")

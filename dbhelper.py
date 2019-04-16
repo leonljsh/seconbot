@@ -44,6 +44,9 @@ def find_by_id(telegram_id):
 def toggle_typing(telegram_id, state=None, admin=False):
     user = find_by_id(telegram_id)
 
+    if not user:
+        return
+
     if state is None:
         user.state = User.STATE_TYPING if not user.is_typing else User.STATE_REGULAR
     else:
